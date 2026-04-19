@@ -294,6 +294,18 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
                     extra_context = f'\n\n【買い物リスト】\n{items}'
                 else:
                     extra_context = '\n\n【買い物リスト】なし'
+            elif any(kw in user_message for kw in ['スケジュール', 'カレンダー', '予定']):
+                events = get_today_events()
+                if events:
+                    event_lines = []
+                    for e in events:
+                        start = e.get('start', {}).get('dateTime', e.get('start', {}).get('date', ''))
+                        if 'T' in start:
+                            start = datetime.fromisoformat(start).strftime('%H:%M')
+                        event_lines.append(f'・{start} {e.get("summary", "")}')
+                    extra_context = '\n\n【今日のGoogleカレンダー】\n' + '\n'.join(event_lines)
+                else:
+                    extra_context = '\n\n【今日のGoogleカレンダー】今日は予定が登録されていません。架空の予定は絶対に作らないこと。'
 
             # 会話履歴取得
             history = get_history(user_id, agent_name)
