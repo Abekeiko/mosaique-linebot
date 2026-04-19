@@ -8,12 +8,44 @@ from groq import Groq
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import re
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 app = Flask(__name__)
 
 groq_client = Groq(api_key=os.environ.get('GROQ_API_KEY'))
+
+CALENDAR_ID = os.environ.get('GOOGLE_CALENDAR_ID', 'abekeiko0813@gmail.com')
+
+def get_calendar_service():
+    creds_json = base64.b64decode(os.environ.get('GOOGLE_CREDENTIALS_B64', '')).decode('utf-8')
+    creds_dict = json.loads(creds_json)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict,
+        scopes=['https://www.googleapis.com/auth/calendar.readonly']
+    )
+    return build('calendar', 'v3', credentials=creds)
+
+def get_today_events():
+    try:
+        service = get_calendar_service()
+        jst = timezone(timedelta(hours=9))
+        now = datetime.now(jst)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        end = now.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
+        events = service.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=start,
+            timeMax=end,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        return events.get('items', [])
+    except Exception as e:
+        print(f'Calendar error: {e}')
+        return []
 
 EMI_CHANNEL_SECRET = os.environ.get('EMI_CHANNEL_SECRET')
 EMI_ACCESS_TOKEN = os.environ.get('EMI_CHANNEL_ACCESS_TOKEN')
@@ -338,11 +370,23 @@ def morning_brief():
         tasks = get_tasks(user_id, 'emi')
         task_text = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
 
+        events = get_today_events()
+        if events:
+            event_lines = []
+            for e in events:
+                start = e.get('start', {}).get('dateTime', e.get('start', {}).get('date', ''))
+                if 'T' in start:
+                    start = datetime.fromisoformat(start).strftime('%H:%M')
+                event_lines.append(f'・{start} {e.get("summary", "")}')
+            calendar_text = '\n'.join(event_lines)
+        else:
+            calendar_text = 'なし'
+
         chat = groq_client.chat.completions.create(
             model='llama-3.3-70b-versatile',
             messages=[
                 {'role': 'system', 'content': EMI_PROMPT},
-                {'role': 'user', 'content': f'おはようございます。今日の朝のブリーフィングをしてください。現在の未完了タスク：\n{task_text}\n\nSkylerに向けて、今日やるべきことの優先順位と一言アドバイスを送ってください。'}
+                {'role': 'user', 'content': f'おはようございます。今日の朝のブリーフィングをしてください。\n\n【今日のカレンダー】\n{calendar_text}\n\n【未完了タスク】\n{task_text}\n\nSkylerに向けて、今日やるべきことの優先順位と一言アドバイスを送ってください。'}
             ]
         )
         message = chat.choices[0].message.content
