@@ -47,18 +47,27 @@ def create_calendar_event(summary, start_datetime, end_datetime=None):
 def parse_event_datetime(text):
     jst = timezone(timedelta(hours=9))
     now = datetime.now(jst)
-    patterns = [
-        (r'明日(\d+)時', lambda m: now.replace(day=now.day+1, hour=int(m.group(1)), minute=0, second=0, microsecond=0)),
-        (r'今日(\d+)時', lambda m: now.replace(hour=int(m.group(1)), minute=0, second=0, microsecond=0)),
-        (r'(\d+)月(\d+)日(\d+)時', lambda m: now.replace(month=int(m.group(1)), day=int(m.group(2)), hour=int(m.group(3)), minute=0, second=0, microsecond=0)),
-    ]
-    for pattern, handler in patterns:
-        m = re.search(pattern, text)
+    flat = text.replace('\n', ' ')
+
+    def make_dt(base, hour, minute=0):
+        return base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    time_m = re.search(r'(\d{1,2})[：:時](\d{2})?', flat)
+    hour = int(time_m.group(1)) if time_m else None
+    minute = int(time_m.group(2)) if time_m and time_m.group(2) else 0
+
+    if hour is None:
+        return None
+
+    if '明日' in flat:
+        base = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return make_dt(base, hour, minute)
+    elif '今日' in flat:
+        return make_dt(now, hour, minute)
+    else:
+        m = re.search(r'(\d+)月(\d+)日', flat)
         if m:
-            try:
-                return handler(m)
-            except Exception:
-                pass
+            return now.replace(month=int(m.group(1)), day=int(m.group(2)), hour=hour, minute=minute, second=0, microsecond=0)
     return None
 
 def get_today_events():
