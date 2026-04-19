@@ -336,7 +336,7 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
                     extra_context = f'\n\n【買い物リスト】\n{items}'
                 else:
                     extra_context = '\n\n【買い物リスト】なし'
-            elif any(kw in user_message for kw in ['入れて', '登録して', '予定を入れ', 'スケジュールして']) and any(kw in user_message for kw in ['時', '明日', '今日']):
+            elif any(kw in user_message for kw in ['入れて', '入れといて', '入れとい', '登録して', '予定を入れ', 'スケジュールして', '追加して']) and any(kw in user_message for kw in ['時', '明日', '今日']):
                 dt = parse_event_datetime(user_message)
                 title = re.sub(r'(明日|今日|\d+月|\d+日|\d+時|入れて|登録して|予定を|スケジュール)', '', user_message).strip()
                 if dt and title:
