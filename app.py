@@ -27,6 +27,29 @@ def get_calendar_service():
     return build('calendar', 'v3', credentials=creds)
 
 
+def delete_calendar_event(title_keyword):
+    try:
+        service = get_calendar_service()
+        jst = timezone(timedelta(hours=9))
+        now = datetime.now(jst)
+        events = service.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=now.isoformat(),
+            maxResults=20,
+            singleEvents=True,
+            orderBy='startTime',
+            q=title_keyword
+        ).execute().get('items', [])
+        if not events:
+            return False, '該当する予定が見つかりませんでした。'
+        event = events[0]
+        service.events().delete(calendarId=CALENDAR_ID, eventId=event['id']).execute()
+        return True, event.get('summary', '')
+    except Exception as e:
+        print(f'Calendar delete error: {e}')
+        return False, str(e)
+
+
 def create_calendar_event(summary, start_datetime, end_datetime=None):
     try:
         service = get_calendar_service()
@@ -328,12 +351,16 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
 }}
 
 - calendar_create: カレンダーに予定を追加したい
+- calendar_delete: カレンダーの予定を削除・キャンセルしたい（"keyword"フィールドに検索キーワードを入れる）
 - calendar_read: 予定を確認したい
 - task_save: タスクを登録したい
 - shopping_save: 買い物リストに追加したい
 - task_list: タスク一覧を見たい
 - shopping_list: 買い物リストを見たい
-- chat: それ以外'''},
+- chat: それ以外
+
+calendar_deleteの場合は "keyword" フィールドも返すこと:
+{{"intent": "calendar_delete", "keyword": "削除する予定のキーワード"}}'''},
                     {'role': 'user', 'content': user_message}
                 ],
                 temperature=0
@@ -359,6 +386,11 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
                 except Exception as e:
                     print(f'Calendar create error: {e}')
                     extra_context = '\n\n【カレンダー登録結果】日時の解析に失敗しました。'
+
+            elif intent == 'calendar_delete':
+                keyword = intent_data.get('keyword', '')
+                success, msg = delete_calendar_event(keyword)
+                extra_context = f'\n\n【カレンダー削除結果】{"「" + msg + "」を削除しました。" if success else msg}'
 
             elif intent == 'calendar_read':
                 events = get_today_events()
