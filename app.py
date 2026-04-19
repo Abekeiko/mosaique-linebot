@@ -22,9 +22,44 @@ CALENDAR_ID = os.environ.get('GOOGLE_CALENDAR_ID', 'abekeiko0813@gmail.com')
 def get_calendar_service():
     creds = service_account.Credentials.from_service_account_file(
         '/etc/secrets/google-credentials.json',
-        scopes=['https://www.googleapis.com/auth/calendar.readonly']
+        scopes=['https://www.googleapis.com/auth/calendar']
     )
     return build('calendar', 'v3', credentials=creds)
+
+
+def create_calendar_event(summary, start_datetime, end_datetime=None):
+    try:
+        service = get_calendar_service()
+        if end_datetime is None:
+            end_datetime = start_datetime.replace(hour=start_datetime.hour + 1)
+        event = {
+            'summary': summary,
+            'start': {'dateTime': start_datetime.isoformat(), 'timeZone': 'Asia/Tokyo'},
+            'end': {'dateTime': end_datetime.isoformat(), 'timeZone': 'Asia/Tokyo'},
+        }
+        service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
+        return True
+    except Exception as e:
+        print(f'Calendar create error: {e}')
+        return False
+
+
+def parse_event_datetime(text):
+    jst = timezone(timedelta(hours=9))
+    now = datetime.now(jst)
+    patterns = [
+        (r'明日(\d+)時', lambda m: now.replace(day=now.day+1, hour=int(m.group(1)), minute=0, second=0, microsecond=0)),
+        (r'今日(\d+)時', lambda m: now.replace(hour=int(m.group(1)), minute=0, second=0, microsecond=0)),
+        (r'(\d+)月(\d+)日(\d+)時', lambda m: now.replace(month=int(m.group(1)), day=int(m.group(2)), hour=int(m.group(3)), minute=0, second=0, microsecond=0)),
+    ]
+    for pattern, handler in patterns:
+        m = re.search(pattern, text)
+        if m:
+            try:
+                return handler(m)
+            except Exception:
+                pass
+    return None
 
 def get_today_events():
     try:
@@ -292,6 +327,14 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
                     extra_context = f'\n\n【買い物リスト】\n{items}'
                 else:
                     extra_context = '\n\n【買い物リスト】なし'
+            elif any(kw in user_message for kw in ['入れて', '登録して', '予定を入れ', 'スケジュールして']) and any(kw in user_message for kw in ['時', '明日', '今日']):
+                dt = parse_event_datetime(user_message)
+                title = re.sub(r'(明日|今日|\d+月|\d+日|\d+時|入れて|登録して|予定を|スケジュール)', '', user_message).strip()
+                if dt and title:
+                    success = create_calendar_event(title, dt)
+                    extra_context = f'\n\n【カレンダー登録結果】{"成功しました。「{title}」を{dt.strftime(\"%m月%d日 %H時\")}に登録しました。" if success else "登録に失敗しました。"}'
+                else:
+                    extra_context = '\n\n【カレンダー登録】日時またはタイトルが読み取れませんでした。詳しく教えてもらうよう伝えてください。'
             elif any(kw in user_message for kw in ['スケジュール', 'カレンダー', '予定']):
                 events = get_today_events()
                 if events:
