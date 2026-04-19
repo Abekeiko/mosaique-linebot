@@ -57,7 +57,7 @@ def verify_signature(body_bytes, signature, channel_secret):
 
 
 def reply_line(reply_token, message, access_token):
-    requests.post(
+    r = requests.post(
         'https://api.line.me/v2/bot/message/reply',
         headers={
             'Authorization': f'Bearer {access_token}',
@@ -68,6 +68,7 @@ def reply_line(reply_token, message, access_token):
             'messages': [{'type': 'text', 'text': message}]
         }
     )
+    app.logger.info(f'LINE reply status: {r.status_code} {r.text}')
 
 
 def handle_webhook(body_bytes, signature, channel_secret, access_token, system_prompt):
