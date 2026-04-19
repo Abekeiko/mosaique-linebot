@@ -76,6 +76,7 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
         abort(400)
 
     body = json.loads(body_bytes.decode('utf-8'))
+    app.logger.info(f'Received body: {body}')
     for event in body.get('events', []):
         if event['type'] == 'message' and event['message']['type'] == 'text':
             user_message = event['message']['text']
