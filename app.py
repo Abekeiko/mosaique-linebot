@@ -305,6 +305,16 @@ def andy_callback():
     )
 
 
+def get_all_user_ids(agent):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT DISTINCT user_id FROM conversations WHERE agent=%s',
+                (agent,)
+            )
+            return [r['user_id'] for r in cur.fetchall()]
+
+
 @app.route('/remind', methods=['GET'])
 def remind():
     tasks = get_pending_reminders()
@@ -314,6 +324,26 @@ def remind():
         push_line(task['user_id'], f'リマインダー: {task["content"]}', access_token)
         mark_task_done(task['id'])
     return f'done: {len(tasks)} reminders sent'
+
+
+@app.route('/morning-brief', methods=['GET'])
+def morning_brief():
+    user_ids = get_all_user_ids('emi')
+    for user_id in user_ids:
+        tasks = get_tasks(user_id, 'emi')
+        task_text = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
+
+        chat = groq_client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=[
+                {'role': 'system', 'content': EMI_PROMPT},
+                {'role': 'user', 'content': f'おはようございます。今日の朝のブリーフィングをしてください。現在の未完了タスク：\n{task_text}\n\nSkylerに向けて、今日やるべきことの優先順位と一言アドバイスを送ってください。'}
+            ]
+        )
+        message = chat.choices[0].message.content
+        push_line(user_id, message, EMI_ACCESS_TOKEN)
+
+    return f'done: morning brief sent to {len(user_ids)} users'
 
 
 @app.route('/')
