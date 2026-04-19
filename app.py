@@ -4,12 +4,12 @@ import hashlib
 import hmac
 import base64
 from flask import Flask, request, abort
-from google import genai
+from groq import Groq
 import requests
 
 app = Flask(__name__)
 
-client = genai.Client(api_key=os.environ.get('GEMINI_API_KEY'))
+groq_client = Groq(api_key=os.environ.get('GROQ_API_KEY'))
 
 EMI_CHANNEL_SECRET = os.environ.get('EMI_CHANNEL_SECRET')
 EMI_ACCESS_TOKEN = os.environ.get('EMI_CHANNEL_ACCESS_TOKEN')
@@ -78,11 +78,14 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
     for event in body.get('events', []):
         if event['type'] == 'message' and event['message']['type'] == 'text':
             user_message = event['message']['text']
-            response = client.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=f"{system_prompt}\n\nユーザー: {user_message}\n\nあなた:"
+            chat = groq_client.chat.completions.create(
+                model='llama-3.3-70b-versatile',
+                messages=[
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_message}
+                ]
             )
-            reply_line(event['replyToken'], response.text, access_token)
+            reply_line(event['replyToken'], chat.choices[0].message.content, access_token)
 
     return 'OK'
 
