@@ -10,7 +10,7 @@ import requests
 app = Flask(__name__)
 
 genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.0-flash')
 
 EMI_CHANNEL_SECRET = os.environ.get('EMI_CHANNEL_SECRET')
 EMI_ACCESS_TOKEN = os.environ.get('EMI_CHANNEL_ACCESS_TOKEN')
