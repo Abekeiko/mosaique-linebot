@@ -68,7 +68,7 @@ def reply_line(reply_token, message, access_token):
             'messages': [{'type': 'text', 'text': message}]
         }
     )
-    app.logger.info(f'LINE reply status: {r.status_code} {r.text}')
+    print(f'LINE reply status: {r.status_code} {r.text}')
 
 
 def handle_webhook(body_bytes, signature, channel_secret, access_token, system_prompt):
@@ -76,7 +76,7 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
         abort(400)
 
     body = json.loads(body_bytes.decode('utf-8'))
-    app.logger.info(f'Received body: {body}')
+    print(f'Received body: {body}')
     for event in body.get('events', []):
         if event['type'] == 'message' and event['message']['type'] == 'text':
             user_message = event['message']['text']
