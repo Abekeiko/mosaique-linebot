@@ -89,6 +89,7 @@ def init_db():
                     user_id TEXT,
                     agent TEXT,
                     content TEXT,
+                    task_type TEXT DEFAULT 'task',
                     remind_at TIMESTAMP,
                     done BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT NOW()
@@ -118,14 +119,30 @@ def save_message(user_id, agent, role, content):
         conn.commit()
 
 
-def save_task(user_id, agent, content, remind_at=None):
+def save_task(user_id, agent, content, task_type='task', remind_at=None):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                'INSERT INTO tasks (user_id, agent, content, remind_at) VALUES (%s, %s, %s, %s)',
-                (user_id, agent, content, remind_at)
+                'INSERT INTO tasks (user_id, agent, content, task_type, remind_at) VALUES (%s, %s, %s, %s, %s)',
+                (user_id, agent, content, task_type, remind_at)
             )
         conn.commit()
+
+
+def get_tasks(user_id, agent, task_type=None):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if task_type:
+                cur.execute(
+                    'SELECT content, created_at FROM tasks WHERE user_id=%s AND agent=%s AND task_type=%s AND done=FALSE ORDER BY created_at',
+                    (user_id, agent, task_type)
+                )
+            else:
+                cur.execute(
+                    'SELECT content, task_type, created_at FROM tasks WHERE user_id=%s AND agent=%s AND done=FALSE ORDER BY created_at',
+                    (user_id, agent)
+                )
+            return cur.fetchall()
 
 
 def get_pending_reminders():
@@ -208,14 +225,34 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
             user_id = event['source']['userId']
             user_message = event['message']['text']
 
-            # タスク保存
-            if any(kw in user_message for kw in ['タスク', 'やること', 'TODO', 'todo']):
+            # タスク・買い物リスト保存
+            if any(kw in user_message for kw in ['買い物', '買う', '購入']):
                 remind_at = parse_remind_at(user_message)
-                save_task(user_id, agent_name, user_message, remind_at)
+                save_task(user_id, agent_name, user_message, 'shopping', remind_at)
+            elif any(kw in user_message for kw in ['タスク', 'やること', 'TODO', 'todo']):
+                remind_at = parse_remind_at(user_message)
+                save_task(user_id, agent_name, user_message, 'task', remind_at)
+
+            # リスト照会
+            extra_context = ''
+            if any(kw in user_message for kw in ['やることリスト', 'タスクリスト', 'タスク一覧']):
+                tasks = get_tasks(user_id, agent_name, 'task')
+                if tasks:
+                    items = '\n'.join([f'・{t["content"]}' for t in tasks])
+                    extra_context = f'\n\n【登録済みタスク】\n{items}'
+                else:
+                    extra_context = '\n\n【登録済みタスク】なし'
+            elif any(kw in user_message for kw in ['買い物リスト', '買うもの一覧']):
+                tasks = get_tasks(user_id, agent_name, 'shopping')
+                if tasks:
+                    items = '\n'.join([f'・{t["content"]}' for t in tasks])
+                    extra_context = f'\n\n【買い物リスト】\n{items}'
+                else:
+                    extra_context = '\n\n【買い物リスト】なし'
 
             # 会話履歴取得
             history = get_history(user_id, agent_name)
-            messages = [{'role': 'system', 'content': system_prompt}]
+            messages = [{'role': 'system', 'content': system_prompt + extra_context}]
             for h in history:
                 messages.append({'role': h['role'], 'content': h['content']})
             messages.append({'role': 'user', 'content': user_message})
