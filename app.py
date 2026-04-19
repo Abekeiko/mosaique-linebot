@@ -20,10 +20,8 @@ groq_client = Groq(api_key=os.environ.get('GROQ_API_KEY'))
 CALENDAR_ID = os.environ.get('GOOGLE_CALENDAR_ID', 'abekeiko0813@gmail.com')
 
 def get_calendar_service():
-    creds_json = base64.b64decode(os.environ.get('GOOGLE_CREDENTIALS_B64', '')).decode('utf-8')
-    creds_dict = json.loads(creds_json)
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict,
+    creds = service_account.Credentials.from_service_account_file(
+        '/etc/secrets/google-credentials.json',
         scopes=['https://www.googleapis.com/auth/calendar.readonly']
     )
     return build('calendar', 'v3', credentials=creds)
