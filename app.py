@@ -4,13 +4,12 @@ import hashlib
 import hmac
 import base64
 from flask import Flask, request, abort
-import google.generativeai as genai
+from google import genai
 import requests
 
 app = Flask(__name__)
 
-genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-2.0-flash')
+client = genai.Client(api_key=os.environ.get('GEMINI_API_KEY'))
 
 EMI_CHANNEL_SECRET = os.environ.get('EMI_CHANNEL_SECRET')
 EMI_ACCESS_TOKEN = os.environ.get('EMI_CHANNEL_ACCESS_TOKEN')
@@ -79,8 +78,9 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
     for event in body.get('events', []):
         if event['type'] == 'message' and event['message']['type'] == 'text':
             user_message = event['message']['text']
-            response = model.generate_content(
-                f"{system_prompt}\n\nユーザー: {user_message}\n\nあなた:"
+            response = client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=f"{system_prompt}\n\nユーザー: {user_message}\n\nあなた:"
             )
             reply_line(event['replyToken'], response.text, access_token)
 
