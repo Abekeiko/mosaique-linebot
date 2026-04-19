@@ -312,39 +312,55 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
             user_id = event['source']['userId']
             user_message = event['message']['text']
 
-            # タスク・買い物リスト保存
-            if any(kw in user_message for kw in ['買い物', '買う', '購入']):
-                remind_at = parse_remind_at(user_message)
-                save_task(user_id, agent_name, user_message, 'shopping', remind_at)
-            elif any(kw in user_message for kw in ['タスク', 'やること', 'TODO', 'todo']):
-                remind_at = parse_remind_at(user_message)
-                save_task(user_id, agent_name, user_message, 'task', remind_at)
+            # AIで意図を判定
+            jst = timezone(timedelta(hours=9))
+            today_str = datetime.now(jst).strftime('%Y-%m-%d')
+            intent_response = groq_client.chat.completions.create(
+                model='llama-3.3-70b-versatile',
+                messages=[
+                    {'role': 'system', 'content': f'''今日の日付は{today_str}（JST）です。
+ユーザーのメッセージを分析して、以下のJSONのみを返してください。他の文章は不要です。
 
-            # リスト照会
+{{
+  "intent": "calendar_create" | "calendar_read" | "task_save" | "shopping_save" | "task_list" | "shopping_list" | "chat",
+  "title": "予定タイトル（calendar_createのみ）",
+  "datetime": "YYYY-MM-DDTHH:MM:00+09:00（calendar_createのみ）"
+}}
+
+- calendar_create: カレンダーに予定を追加したい
+- calendar_read: 予定を確認したい
+- task_save: タスクを登録したい
+- shopping_save: 買い物リストに追加したい
+- task_list: タスク一覧を見たい
+- shopping_list: 買い物リストを見たい
+- chat: それ以外'''},
+                    {'role': 'user', 'content': user_message}
+                ],
+                temperature=0
+            )
+
             extra_context = ''
-            if any(kw in user_message for kw in ['やることリスト', 'タスクリスト', 'タスク一覧']):
-                tasks = get_tasks(user_id, agent_name, 'task')
-                if tasks:
-                    items = '\n'.join([f'・{t["content"]}' for t in tasks])
-                    extra_context = f'\n\n【登録済みタスク】\n{items}'
-                else:
-                    extra_context = '\n\n【登録済みタスク】なし'
-            elif any(kw in user_message for kw in ['買い物リスト', '買うもの一覧']):
-                tasks = get_tasks(user_id, agent_name, 'shopping')
-                if tasks:
-                    items = '\n'.join([f'・{t["content"]}' for t in tasks])
-                    extra_context = f'\n\n【買い物リスト】\n{items}'
-                else:
-                    extra_context = '\n\n【買い物リスト】なし'
-            elif any(kw in user_message for kw in ['入れて', '入れといて', '入れとい', '登録して', '予定を入れ', 'スケジュールして', '追加して']) and any(kw in user_message for kw in ['時', '明日', '今日']):
-                dt = parse_event_datetime(user_message)
-                title = re.sub(r'(明日|今日|\d+月|\d+日|\d+時|入れて|登録して|予定を|スケジュール)', '', user_message).strip()
-                if dt and title:
+            try:
+                intent_text = intent_response.choices[0].message.content.strip()
+                intent_text = re.search(r'\{.*\}', intent_text, re.DOTALL).group()
+                intent_data = json.loads(intent_text)
+                intent = intent_data.get('intent', 'chat')
+            except Exception as e:
+                print(f'Intent parse error: {e}')
+                intent = 'chat'
+
+            if intent == 'calendar_create':
+                title = intent_data.get('title', '')
+                dt_str = intent_data.get('datetime', '')
+                try:
+                    dt = datetime.fromisoformat(dt_str)
                     success = create_calendar_event(title, dt)
-                    extra_context = f'\n\n【カレンダー登録結果】{"成功しました。「{title}」を{dt.strftime(\"%m月%d日 %H時\")}に登録しました。" if success else "登録に失敗しました。"}'
-                else:
-                    extra_context = '\n\n【カレンダー登録】日時またはタイトルが読み取れませんでした。詳しく教えてもらうよう伝えてください。'
-            elif any(kw in user_message for kw in ['スケジュール', 'カレンダー', '予定']):
+                    extra_context = f'\n\n【カレンダー登録結果】{"成功。「" + title + "」を" + dt.strftime("%m月%d日 %H:%M") + "に登録しました。" if success else "登録失敗。"}'
+                except Exception as e:
+                    print(f'Calendar create error: {e}')
+                    extra_context = '\n\n【カレンダー登録結果】日時の解析に失敗しました。'
+
+            elif intent == 'calendar_read':
                 events = get_today_events()
                 if events:
                     event_lines = []
@@ -356,6 +372,24 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
                     extra_context = '\n\n【今日のGoogleカレンダー】\n' + '\n'.join(event_lines)
                 else:
                     extra_context = '\n\n【今日のGoogleカレンダー】今日は予定が登録されていません。架空の予定は絶対に作らないこと。'
+
+            elif intent == 'task_save':
+                save_task(user_id, agent_name, user_message, 'task')
+                extra_context = '\n\n【タスク登録】完了しました。'
+
+            elif intent == 'shopping_save':
+                save_task(user_id, agent_name, user_message, 'shopping')
+                extra_context = '\n\n【買い物リスト登録】完了しました。'
+
+            elif intent == 'task_list':
+                tasks = get_tasks(user_id, agent_name, 'task')
+                items = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
+                extra_context = f'\n\n【登録済みタスク】\n{items}'
+
+            elif intent == 'shopping_list':
+                tasks = get_tasks(user_id, agent_name, 'shopping')
+                items = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
+                extra_context = f'\n\n【買い物リスト】\n{items}'
 
             # 会話履歴取得
             history = get_history(user_id, agent_name)
