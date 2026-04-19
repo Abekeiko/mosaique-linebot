@@ -103,6 +103,11 @@ def init_db():
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
+        # 既存テーブルにtask_type列がなければ追加
+        with conn.cursor() as cur:
+            cur.execute('''
+                ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_type TEXT DEFAULT 'task'
+            ''')
         conn.commit()
 
 
