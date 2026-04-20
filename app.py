@@ -523,6 +523,22 @@ def morning_brief():
     return f'done: morning brief sent to {len(user_ids)} users'
 
 
+@app.route('/dinner-suggestion', methods=['GET'])
+def dinner_suggestion():
+    user_ids = get_all_user_ids('emi')
+    for user_id in user_ids:
+        chat = groq_client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=[
+                {'role': 'system', 'content': EMI_PROMPT},
+                {'role': 'user', 'content': '今日の夕飯の献立案を3つと、それに必要な買い物リストをSkylerにLINEで送ってください。簡潔に、温かみのある言葉で。'}
+            ]
+        )
+        message = chat.choices[0].message.content
+        push_line(user_id, message, EMI_ACCESS_TOKEN)
+    return f'done: dinner suggestion sent to {len(user_ids)} users'
+
+
 @app.route('/')
 def health():
     return 'mosaique LINE bot is running!'
