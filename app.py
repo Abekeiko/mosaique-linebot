@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 import re
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
@@ -100,6 +101,26 @@ def get_today_events():
         now = datetime.now(jst)
         start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         end = now.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
+        events = service.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=start,
+            timeMax=end,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        return events.get('items', [])
+    except Exception as e:
+        print(f'Calendar error: {e}')
+        return []
+
+
+def get_tomorrow_events():
+    try:
+        service = get_calendar_service()
+        jst = timezone(timedelta(hours=9))
+        tomorrow = datetime.now(jst) + timedelta(days=1)
+        start = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        end = tomorrow.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
         events = service.events().list(
             calendarId=CALENDAR_ID,
             timeMin=start,
@@ -491,14 +512,13 @@ def remind():
     return f'done: {len(tasks)} reminders sent'
 
 
-@app.route('/morning-brief', methods=['GET'])
-def morning_brief():
+def send_evening_brief():
     user_ids = get_all_user_ids('emi')
     for user_id in user_ids:
         tasks = get_tasks(user_id, 'emi')
         task_text = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
 
-        events = get_today_events()
+        events = get_tomorrow_events()
         if events:
             event_lines = []
             for e in events:
@@ -514,13 +534,18 @@ def morning_brief():
             model='llama-3.3-70b-versatile',
             messages=[
                 {'role': 'system', 'content': EMI_PROMPT},
-                {'role': 'user', 'content': f'おはようございます。今日の朝のブリーフィングをしてください。\n\n【今日のカレンダー】\n{calendar_text}\n\n【未完了タスク】\n{task_text}\n\nSkylerに向けて、今日やるべきことの優先順位と一言アドバイスを送ってください。'}
+                {'role': 'user', 'content': f'今夜のブリーフィングをしてください。\n\n【明日のカレンダー】\n{calendar_text}\n\n【未完了タスク】\n{task_text}\n\nSkylerに向けて、明日やるべきことの優先順位と一言アドバイスを送ってください。'}
             ]
         )
         message = chat.choices[0].message.content
         push_line(user_id, message, EMI_ACCESS_TOKEN)
 
-    return f'done: morning brief sent to {len(user_ids)} users'
+
+@app.route('/morning-brief', methods=['GET'])
+def morning_brief():
+    send_evening_brief()
+    user_ids = get_all_user_ids('emi')
+    return f'done: evening brief sent to {len(user_ids)} users'
 
 
 @app.route('/dinner-suggestion', methods=['GET'])
@@ -547,6 +572,9 @@ def health():
 with app.app_context():
     init_db()
 
+scheduler = BackgroundScheduler(timezone='Asia/Tokyo')
+scheduler.add_job(send_evening_brief, 'cron', hour=22, minute=0)
+scheduler.start()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
