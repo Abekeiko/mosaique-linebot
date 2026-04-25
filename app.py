@@ -189,7 +189,32 @@ ANDY_PROMPT = """あなたはAndy、株式会社mosaiqueの宿泊業・民泊業
 【タスク・スケジュール管理】
 - ユーザーがタスクを伝えたら「タスク登録しました」と確認する
 - リマインダーを依頼されたら日時を確認して「登録しました」と伝える
-- タスク一覧を聞かれたら登録済みのタスクを報告する"""
+- タスク一覧を聞かれたら登録済みのタスクを報告する
+
+【物件情報が届いたとき】
+テキスト・画像・PDFで物件情報（住所・家賃・広さ・築年数など）が送られてきたら、
+必ず以下のフォーマットで分析すること：
+
+━━━━━━━━━━━━━━━
+🏠【民泊適性評価】
+・立地：（評価とコメント）
+・広さ：（評価とコメント）
+・規制：（旅館業法 or 住宅宿泊事業法の観点）
+・総合：★★★☆☆（5段階）
+
+💰【収益シミュレーション】
+・想定月収：〇〇万円（稼働率65%想定）
+・月間費用：〇〇万円
+・月間利益：〇〇万円
+・初期回収期間：約〇ヶ月
+
+✅【投資判断】
+→ Go ／ NoGo ／ 条件付きGo
+理由：〜〜〜
+━━━━━━━━━━━━━━━
+
+情報が不足している場合は分析可能な範囲で回答し、
+以下の不足情報を質問すること：所在地・広さ（㎡）・賃料・築年数"""
 
 
 def get_db():
@@ -327,6 +352,22 @@ def push_line(user_id, message, access_token):
     )
 
 
+def get_line_content(message_id, access_token):
+    r = requests.get(
+        f'https://api-data.line.me/v2/bot/message/{message_id}/content',
+        headers={'Authorization': f'Bearer {access_token}'}
+    )
+    r.raise_for_status()
+    return r.content
+
+
+def extract_pdf_text(pdf_bytes):
+    import io
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    return '\n'.join(page.extract_text() or '' for page in reader.pages)
+
+
 def parse_remind_at(text):
     now = datetime.now()
     patterns = [
@@ -352,17 +393,76 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
     print(f'Received body: {body}')
 
     for event in body.get('events', []):
-        if event['type'] == 'message' and event['message']['type'] == 'text':
-            user_id = event['source']['userId']
-            user_message = event['message']['text']
+        if event['type'] != 'message':
+            continue
 
-            # AIで意図を判定
-            jst = timezone(timedelta(hours=9))
-            today_str = datetime.now(jst).strftime('%Y-%m-%d')
-            intent_response = groq_client.chat.completions.create(
-                model='llama-3.3-70b-versatile',
-                messages=[
-                    {'role': 'system', 'content': f'''今日の日付は{today_str}（JST）です。
+        user_id = event['source']['userId']
+        msg_type = event['message']['type']
+
+        # --- 画像メッセージ（Andyのみ）---
+        if msg_type == 'image' and agent_name == 'andy':
+            try:
+                image_bytes = get_line_content(event['message']['id'], access_token)
+                image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+                vision_chat = groq_client.chat.completions.create(
+                    model='llama-3.2-90b-vision-preview',
+                    messages=[
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': [
+                            {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{image_b64}'}},
+                            {'type': 'text', 'text': 'この物件の画像を分析してください。民泊としての適性・収益・投資判断を評価してください。'}
+                        ]}
+                    ]
+                )
+                reply = vision_chat.choices[0].message.content
+                save_message(user_id, agent_name, 'user', '[画像送信]')
+                save_message(user_id, agent_name, 'assistant', reply)
+                reply_line(event['replyToken'], reply, access_token)
+            except Exception as e:
+                print(f'Image analysis error: {e}')
+                reply_line(event['replyToken'], '画像の読み込みに失敗しました😢もう一度試してみてください！', access_token)
+            continue
+
+        # --- PDFファイルメッセージ（Andyのみ）---
+        if msg_type == 'file' and agent_name == 'andy':
+            try:
+                file_name = event['message'].get('fileName', '')
+                file_bytes = get_line_content(event['message']['id'], access_token)
+                if file_name.lower().endswith('.pdf'):
+                    extracted = extract_pdf_text(file_bytes)
+                    user_message = f'[PDF: {file_name}]\n\n{extracted[:3000]}'
+                else:
+                    user_message = f'[ファイル: {file_name}（内容を読み込めませんでした）]'
+                history = get_history(user_id, agent_name)
+                messages = [{'role': 'system', 'content': system_prompt}]
+                for h in history:
+                    messages.append({'role': h['role'], 'content': h['content']})
+                messages.append({'role': 'user', 'content': user_message})
+                chat = groq_client.chat.completions.create(
+                    model='llama-3.3-70b-versatile',
+                    messages=messages
+                )
+                reply = chat.choices[0].message.content
+                save_message(user_id, agent_name, 'user', f'[PDF送信: {file_name}]')
+                save_message(user_id, agent_name, 'assistant', reply)
+                reply_line(event['replyToken'], reply, access_token)
+            except Exception as e:
+                print(f'File analysis error: {e}')
+                reply_line(event['replyToken'], 'ファイルの読み込みに失敗しました😢もう一度試してみてください！', access_token)
+            continue
+
+        if msg_type != 'text':
+            continue
+
+        user_message = event['message']['text']
+
+        # AIで意図を判定
+        jst = timezone(timedelta(hours=9))
+        today_str = datetime.now(jst).strftime('%Y-%m-%d')
+        intent_response = groq_client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=[
+                {'role': 'system', 'content': f'''今日の日付は{today_str}（JST）です。
 ユーザーのメッセージを分析して、以下のJSONのみを返してください。他の文章は不要です。
 
 {{
@@ -382,87 +482,87 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
 
 calendar_deleteの場合は "keyword" フィールドも返すこと:
 {{"intent": "calendar_delete", "keyword": "削除する予定のキーワード"}}'''},
-                    {'role': 'user', 'content': user_message}
-                ],
-                temperature=0
-            )
+                {'role': 'user', 'content': user_message}
+            ],
+            temperature=0
+        )
 
-            extra_context = ''
+        extra_context = ''
+        try:
+            intent_text = intent_response.choices[0].message.content.strip()
+            intent_text = re.search(r'\{.*\}', intent_text, re.DOTALL).group()
+            intent_data = json.loads(intent_text)
+            intent = intent_data.get('intent', 'chat')
+        except Exception as e:
+            print(f'Intent parse error: {e}')
+            intent = 'chat'
+
+        if intent == 'calendar_create':
+            title = intent_data.get('title', '')
+            dt_str = intent_data.get('datetime', '')
             try:
-                intent_text = intent_response.choices[0].message.content.strip()
-                intent_text = re.search(r'\{.*\}', intent_text, re.DOTALL).group()
-                intent_data = json.loads(intent_text)
-                intent = intent_data.get('intent', 'chat')
+                dt = datetime.fromisoformat(dt_str)
+                success = create_calendar_event(title, dt)
+                extra_context = f'\n\n【カレンダー登録結果】{"成功。「" + title + "」を" + dt.strftime("%m月%d日 %H:%M") + "に登録しました。" if success else "登録失敗。"}'
             except Exception as e:
-                print(f'Intent parse error: {e}')
-                intent = 'chat'
+                print(f'Calendar create error: {e}')
+                extra_context = '\n\n【カレンダー登録結果】日時の解析に失敗しました。'
 
-            if intent == 'calendar_create':
-                title = intent_data.get('title', '')
-                dt_str = intent_data.get('datetime', '')
-                try:
-                    dt = datetime.fromisoformat(dt_str)
-                    success = create_calendar_event(title, dt)
-                    extra_context = f'\n\n【カレンダー登録結果】{"成功。「" + title + "」を" + dt.strftime("%m月%d日 %H:%M") + "に登録しました。" if success else "登録失敗。"}'
-                except Exception as e:
-                    print(f'Calendar create error: {e}')
-                    extra_context = '\n\n【カレンダー登録結果】日時の解析に失敗しました。'
+        elif intent == 'calendar_delete':
+            keyword = intent_data.get('keyword', '')
+            success, msg = delete_calendar_event(keyword)
+            extra_context = f'\n\n【カレンダー削除結果】{"「" + msg + "」を削除しました。" if success else msg}'
 
-            elif intent == 'calendar_delete':
-                keyword = intent_data.get('keyword', '')
-                success, msg = delete_calendar_event(keyword)
-                extra_context = f'\n\n【カレンダー削除結果】{"「" + msg + "」を削除しました。" if success else msg}'
+        elif intent == 'calendar_read':
+            events = get_today_events()
+            if events:
+                event_lines = []
+                for e in events:
+                    start = e.get('start', {}).get('dateTime', e.get('start', {}).get('date', ''))
+                    if 'T' in start:
+                        start = datetime.fromisoformat(start).strftime('%H:%M')
+                    event_lines.append(f'・{start} {e.get("summary", "")}')
+                extra_context = '\n\n【今日のGoogleカレンダー】\n' + '\n'.join(event_lines)
+            else:
+                extra_context = '\n\n【今日のGoogleカレンダー】今日は予定が登録されていません。架空の予定は絶対に作らないこと。'
 
-            elif intent == 'calendar_read':
-                events = get_today_events()
-                if events:
-                    event_lines = []
-                    for e in events:
-                        start = e.get('start', {}).get('dateTime', e.get('start', {}).get('date', ''))
-                        if 'T' in start:
-                            start = datetime.fromisoformat(start).strftime('%H:%M')
-                        event_lines.append(f'・{start} {e.get("summary", "")}')
-                    extra_context = '\n\n【今日のGoogleカレンダー】\n' + '\n'.join(event_lines)
-                else:
-                    extra_context = '\n\n【今日のGoogleカレンダー】今日は予定が登録されていません。架空の予定は絶対に作らないこと。'
+        elif intent == 'task_save':
+            save_task(user_id, agent_name, user_message, 'task')
+            extra_context = '\n\n【タスク登録】完了しました。'
 
-            elif intent == 'task_save':
-                save_task(user_id, agent_name, user_message, 'task')
-                extra_context = '\n\n【タスク登録】完了しました。'
+        elif intent == 'shopping_save':
+            save_task(user_id, agent_name, user_message, 'shopping')
+            extra_context = '\n\n【買い物リスト登録】完了しました。'
 
-            elif intent == 'shopping_save':
-                save_task(user_id, agent_name, user_message, 'shopping')
-                extra_context = '\n\n【買い物リスト登録】完了しました。'
+        elif intent == 'task_list':
+            tasks = get_tasks(user_id, agent_name, 'task')
+            items = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
+            extra_context = f'\n\n【登録済みタスク】\n{items}'
 
-            elif intent == 'task_list':
-                tasks = get_tasks(user_id, agent_name, 'task')
-                items = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
-                extra_context = f'\n\n【登録済みタスク】\n{items}'
+        elif intent == 'shopping_list':
+            tasks = get_tasks(user_id, agent_name, 'shopping')
+            items = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
+            extra_context = f'\n\n【買い物リスト】\n{items}'
 
-            elif intent == 'shopping_list':
-                tasks = get_tasks(user_id, agent_name, 'shopping')
-                items = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
-                extra_context = f'\n\n【買い物リスト】\n{items}'
+        # 会話履歴取得
+        history = get_history(user_id, agent_name)
+        messages = [{'role': 'system', 'content': system_prompt + extra_context}]
+        for h in history:
+            messages.append({'role': h['role'], 'content': h['content']})
+        messages.append({'role': 'user', 'content': user_message})
 
-            # 会話履歴取得
-            history = get_history(user_id, agent_name)
-            messages = [{'role': 'system', 'content': system_prompt + extra_context}]
-            for h in history:
-                messages.append({'role': h['role'], 'content': h['content']})
-            messages.append({'role': 'user', 'content': user_message})
+        # AI返答
+        chat = groq_client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=messages
+        )
+        reply = chat.choices[0].message.content
 
-            # AI返答
-            chat = groq_client.chat.completions.create(
-                model='llama-3.3-70b-versatile',
-                messages=messages
-            )
-            reply = chat.choices[0].message.content
+        # 履歴保存
+        save_message(user_id, agent_name, 'user', user_message)
+        save_message(user_id, agent_name, 'assistant', reply)
 
-            # 履歴保存
-            save_message(user_id, agent_name, 'user', user_message)
-            save_message(user_id, agent_name, 'assistant', reply)
-
-            reply_line(event['replyToken'], reply, access_token)
+        reply_line(event['replyToken'], reply, access_token)
 
     return 'OK'
 
