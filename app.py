@@ -192,6 +192,32 @@ ANDY_PROMPT = """あなたはAndy、株式会社mosaiqueの宿泊業・民泊業
 - リマインダーを依頼されたら日時を確認して「登録しました」と伝える
 - タスク一覧を聞かれたら登録済みのタスクを報告する
 
+【OTA多拠点展開】
+■ 現在の登録状況
+- Airbnb：✅ 登録済み
+- Booking.com：⬜ 未登録（次に最優先）
+- じゃらん：⬜ 未登録
+- 楽天トラベル：⬜ 未登録
+- サイトコントローラー：⬜ 未導入
+
+■ OTA優先順位と特徴
+◎ Airbnb：外国人・感度高め層向け（登録済み）
+◎ Booking.com：欧米・アジア外国人に最強。次に登録すべき最重要OTA
+○ じゃらん：国内旅行者・女性グループ向け
+△ 楽天トラベル：国内ファミリー・シニア層向け
+
+■ サイトコントローラー（2つ目OTA登録前に必ず入れること）
+複数OTAを同時管理しないとダブルブッキングが起きる。
+- Smoobu：シンプルで使いやすい、初心者向け（推奨）
+- Beds24：多機能・API連携豊富、上級者向け
+- PriceLabs連携で動的価格設定も自動化できる
+
+■ OTA登録のサポート方法
+- 「〇〇を登録したい」と言われたら、そのOTAの登録ステップを1つずつ案内する
+- 「〇〇登録完了」と報告されたら、進捗を更新して次のアクションを案内する
+- 「OTAの進捗は？」と聞かれたら、登録済み・未登録を整理して報告する
+- Booking.com登録前に必ずサイトコントローラー導入を促すこと
+
 【判断基準（絶対に守ること）】
 ■ 対象エリア
 - 対象：東京23区内、旅館業法で開業できる用途地域のみ
@@ -531,9 +557,13 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
         today_str = datetime.now(jst).strftime('%Y-%m-%d')
         andy_extra = '''
 - property_analysis: 物件情報（住所・家賃・広さ・築年数など）が含まれており民泊判断を求めている
+- ota_update: OTAの登録完了報告や進捗更新（「Booking.com登録した」など）
+- ota_status: OTAの登録状況・進捗確認
 
 property_analysisの場合は "address" フィールドも返すこと（住所が不明なら空文字）:
-{"intent": "property_analysis", "address": "東京都〇〇区〇〇（抽出できた住所）"}''' if agent_name == 'andy' else ''
+{"intent": "property_analysis", "address": "東京都〇〇区〇〇（抽出できた住所）"}
+ota_updateの場合は "ota" フィールドも返すこと:
+{"intent": "ota_update", "ota": "登録・完了したOTA名"}''' if agent_name == 'andy' else ''
         intent_response = groq_client.chat.completions.create(
             model='llama-3.3-70b-versatile',
             messages=[
@@ -618,6 +648,24 @@ calendar_deleteの場合は "keyword" フィールドも返すこと:
             tasks = get_tasks(user_id, agent_name, 'shopping')
             items = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
             extra_context = f'\n\n【買い物リスト】\n{items}'
+
+        elif intent == 'ota_update':
+            ota_name = intent_data.get('ota', '').strip()
+            if ota_name:
+                save_task(user_id, agent_name, f'OTA登録完了: {ota_name}', 'ota')
+                extra_context = f'\n\n【OTA進捗更新】{ota_name} の登録完了をDBに記録しました。'
+            else:
+                extra_context = '\n\n【OTA進捗】どのOTAが完了しましたか？'
+
+        elif intent == 'ota_status':
+            ota_tasks = get_tasks(user_id, agent_name, 'ota')
+            completed = [t['content'].replace('OTA登録完了: ', '') for t in ota_tasks]
+            all_otas = ['Airbnb', 'Booking.com', 'じゃらん', '楽天トラベル', 'サイトコントローラー']
+            status_lines = []
+            for ota in all_otas:
+                done = any(ota in c for c in completed)
+                status_lines.append(f'{"✅" if done else "⬜"} {ota}')
+            extra_context = '\n\n【OTA登録状況】\n' + '\n'.join(status_lines)
 
         elif intent == 'property_analysis':
             address = intent_data.get('address', '').strip()
