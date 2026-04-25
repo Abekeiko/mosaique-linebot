@@ -759,7 +759,7 @@ with app.app_context():
     init_db()
 
 scheduler = BackgroundScheduler(timezone='Asia/Tokyo')
-scheduler.add_job(send_evening_brief, 'cron', hour=22, minute=0)
+scheduler.add_job(send_evening_brief, 'cron', hour=22, minute=0, timezone='Asia/Tokyo')
 scheduler.start()
 
 if __name__ == '__main__':
