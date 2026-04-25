@@ -138,6 +138,7 @@ EMI_ACCESS_TOKEN = os.environ.get('EMI_CHANNEL_ACCESS_TOKEN')
 ANDY_CHANNEL_SECRET = os.environ.get('ANDY_CHANNEL_SECRET')
 ANDY_ACCESS_TOKEN = os.environ.get('ANDY_CHANNEL_ACCESS_TOKEN')
 DATABASE_URL = os.environ.get('DATABASE_URL')
+REINFOLIB_API_KEY = os.environ.get('REINFOLIB_API_KEY', '')
 
 EMI_PROMPT = """あなたはEmily（Emi）、株式会社mosaiqueのCOOであり、Skylerのスーパー秘書です。
 
@@ -386,6 +387,45 @@ def extract_pdf_text(pdf_bytes):
     return '\n'.join(page.extract_text() or '' for page in reader.pages)
 
 
+def lookup_yoto_chiki(address):
+    """住所から用途地域を返す（国土地理院ジオコーディング + REINFOLIB API）"""
+    try:
+        # Step1: 住所 → 座標（国土地理院、無料・キー不要）
+        geo_r = requests.get(
+            'https://msearch.gsi.go.jp/address-search/AddressSearch',
+            params={'q': address},
+            timeout=8
+        )
+        geo_data = geo_r.json()
+        if not geo_data:
+            return None
+        lng, lat = geo_data[0]['geometry']['coordinates']
+
+        # Step2: 座標 → 用途地域（国土交通省 不動産情報ライブラリ）
+        headers = {}
+        if REINFOLIB_API_KEY:
+            headers['Ocp-Apim-Subscription-Key'] = REINFOLIB_API_KEY
+        yoto_r = requests.get(
+            'https://api.reinfolib.mlit.go.jp/ex-api/external/XIT002',
+            params={'longitude': str(lng), 'latitude': str(lat), 'datum': 'JGD2011'},
+            headers=headers,
+            timeout=8
+        )
+        yoto_data = yoto_r.json()
+        items = yoto_data.get('data', [])
+        if items:
+            item = items[0]
+            yoto = (item.get('UseDistrict') or item.get('YoutoChikiName')
+                    or item.get('youto_chiki_name') or item.get('youto_chiki'))
+            area_cls = item.get('AreaClassification', '')
+            if yoto:
+                return f'{yoto}（{area_cls}）' if area_cls else yoto
+        return None
+    except Exception as e:
+        print(f'lookup_yoto_chiki error: {e}')
+        return None
+
+
 def parse_remind_at(text):
     now = datetime.now()
     patterns = [
@@ -428,11 +468,17 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
                         {'role': 'system', 'content': system_prompt},
                         {'role': 'user', 'content': [
                             {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{image_b64}'}},
-                            {'type': 'text', 'text': 'この物件の画像を分析してください。民泊としての適性・収益・投資判断を評価してください。'}
+                            {'type': 'text', 'text': 'この物件の画像を分析してください。民泊としての適性・収益・投資判断を評価してください。住所が画像内に確認できる場合は「住所: 〇〇」と必ず明記してください。'}
                         ]}
                     ]
                 )
                 reply = vision_chat.choices[0].message.content
+                # 住所が読み取れていれば用途地域を自動付与
+                addr_m = re.search(r'住所[：:]\s*([^\n　]+)', reply)
+                if addr_m:
+                    yoto = lookup_yoto_chiki(addr_m.group(1).strip())
+                    if yoto:
+                        reply += f'\n\n🔍【用途地域自動確認】{addr_m.group(1).strip()} → {yoto}'
                 save_message(user_id, agent_name, 'user', '[画像送信]')
                 save_message(user_id, agent_name, 'assistant', reply)
                 reply_line(event['replyToken'], reply, access_token)
@@ -461,6 +507,12 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
                     messages=messages
                 )
                 reply = chat.choices[0].message.content
+                # 住所が含まれていれば用途地域を自動付与
+                addr_m = re.search(r'住所[：:]\s*([^\n　]+)', reply)
+                if addr_m:
+                    yoto = lookup_yoto_chiki(addr_m.group(1).strip())
+                    if yoto:
+                        reply += f'\n\n🔍【用途地域自動確認】{addr_m.group(1).strip()} → {yoto}'
                 save_message(user_id, agent_name, 'user', f'[PDF送信: {file_name}]')
                 save_message(user_id, agent_name, 'assistant', reply)
                 reply_line(event['replyToken'], reply, access_token)
@@ -477,6 +529,11 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
         # AIで意図を判定
         jst = timezone(timedelta(hours=9))
         today_str = datetime.now(jst).strftime('%Y-%m-%d')
+        andy_extra = '''
+- property_analysis: 物件情報（住所・家賃・広さ・築年数など）が含まれており民泊判断を求めている
+
+property_analysisの場合は "address" フィールドも返すこと（住所が不明なら空文字）:
+{"intent": "property_analysis", "address": "東京都〇〇区〇〇（抽出できた住所）"}''' if agent_name == 'andy' else ''
         intent_response = groq_client.chat.completions.create(
             model='llama-3.3-70b-versatile',
             messages=[
@@ -496,7 +553,7 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
 - shopping_save: 買い物リストに追加したい
 - task_list: タスク一覧を見たい
 - shopping_list: 買い物リストを見たい
-- chat: それ以外
+- chat: それ以外{andy_extra}
 
 calendar_deleteの場合は "keyword" フィールドも返すこと:
 {{"intent": "calendar_delete", "keyword": "削除する予定のキーワード"}}'''},
@@ -561,6 +618,17 @@ calendar_deleteの場合は "keyword" フィールドも返すこと:
             tasks = get_tasks(user_id, agent_name, 'shopping')
             items = '\n'.join([f'・{t["content"]}' for t in tasks]) if tasks else 'なし'
             extra_context = f'\n\n【買い物リスト】\n{items}'
+
+        elif intent == 'property_analysis':
+            address = intent_data.get('address', '').strip()
+            if address:
+                yoto = lookup_yoto_chiki(address)
+                if yoto:
+                    extra_context = f'\n\n【用途地域自動確認済み】{address} → {yoto}'
+                else:
+                    extra_context = f'\n\n【用途地域確認】「{address}」の用途地域を自動取得できませんでした。自治体への直接確認を促してください。'
+            else:
+                extra_context = '\n\n【用途地域確認】住所が不明なため用途地域を確認できていません。住所を聞いて確認してください。'
 
         # 会話履歴取得
         history = get_history(user_id, agent_name)
