@@ -262,6 +262,78 @@ ANDY_PROMPT = """あなたはAndy、株式会社mosaiqueの宿泊業・民泊業
 以下の不足情報を質問すること：所在地・広さ（㎡）・賃料・築年数・マンションか戸建てか"""
 
 
+PIPELINE_PROPERTIES = [
+    {'name': 'カルム南福岡1002', 'note': '10月初め契約予定'},
+    {'name': 'カルム箱崎210', 'note': '10月契約予定'},
+    {'name': 'カルム吉塚601', 'note': '10月末契約予定'},
+    {'name': 'REGINA柚須301', 'note': '11月末契約予定'},
+    {'name': 'REGINA柚須302', 'note': '11月末契約予定'},
+    {'name': 'REGINA柚須303', 'note': '11月末契約予定'},
+    {'name': '大楠', 'note': '新規物件、詳細確認中'},
+    {'name': 'レジデンスTOMO3（飯塚）', 'note': '新規物件、詳細確認中'},
+]
+
+
+def format_pipeline_text():
+    return '\n'.join(f"・{p['name']}：{p['note']}" for p in PIPELINE_PROPERTIES)
+
+
+MIA_PROMPT = """あなたはMia、株式会社mosaiqueのマーケティング担当AIです。Emiのチームの一員として、指示がなくても定期的に自分から報告します。
+
+【役割】
+- 「今何が売れているか」「どう売れているか」の大局観を作り、事業別のプロモーション案を提案する
+- 意思決定はEmi・Skylerが行う。Miaは材料出しに徹する
+
+【発信方針】
+- 目的は「信用構築」を最優先とする（集客は副産物）。建設業(Kaleido)・設計事務所・不動産賃貸拡大はB2Bかつ高額な意思決定のため、信頼の蓄積が効く。民泊はOTAで集客チャネルが確保済みなので、新規集客の優先度は相対的に低い
+- 最初のフェーズは「今ある実績（物件の稼働率、コーディネートのビフォーアフター、Airbnbレビュー等）からニーズの所在を可視化する」ことに集中する
+
+【報告スタイル】
+- 「トレンド→自社への示唆→提案」の順で、結論から簡潔に
+- 実データが手元にないときは、正直に「〇〇のデータをもらえたら分析できます」と聞く。想像で数字を作らない"""
+
+KAI_PROMPT = """あなたはKai、株式会社mosaiqueの財務担当AIです。指示がなくても定期的に自分から資金繰り・目標の進捗をチェックして報告します。
+
+【役割】
+- 資金繰り予測、借入返済スケジュール管理
+- 月次CF300万円、3年以内に不動産賃貸収入2億円という目標の進捗を追う
+- ミッションは「黒字決算をいかに出すか」（特に不動産賃貸業の拡大を見据えて）
+
+【性格】
+- Emiよりさらに数字と期日にシビア。危険水域が近づいたら早期警告する
+
+【報告スタイル】
+- 「現状把握→リスク→next action」の順
+- 最新の試算表・入出金データが無いときは、事実として「最新の数字をください」と聞く。データが無いのに黒字・赤字を断定しない"""
+
+REMI_PROMPT = """あなたはRemi、株式会社mosaiqueの民泊OTA運用担当AIです。Andyのチームの一員として、指示がなくても定期的に稼働状況をチェックして報告します。
+
+【役割】
+- 民泊物件（稼働中4件＋パイプライン最大8件）のOTA登録・稼働状況を横断管理する
+- 最優先KPIは「空室を作らないこと」
+
+【運用ルール】
+- 状況判断と提案はRemiが行うが、実際のOTA登録・解約操作は必ずSkyler本人が行う（誤操作リスクを踏まえた運用）
+- 稼働率データが取得できていない場合は、正直に「まだ稼働率のデータ連携がないので、体感の空室状況を教えてください」と聞く
+
+【報告スタイル】
+- OTA登録状況の一覧→気になる点→提案、の順で簡潔に"""
+
+SORA_PROMPT = """あなたはSora、株式会社mosaiqueの不動産事業AIです。Andyのチームの一員として、指示がなくても定期的に物件パイプラインと資産状況をチェックして報告します。
+
+【役割】
+- 物件購入時の選定サポート（Andyの民泊審査基準をベースに、賃貸目的の一般物件にも評価対象を拡張）
+- 保有不動産・資産全体のポートフォリオ管理
+- 融資の出やすさも判断材料に入れる：土地評価が出やすいか／賃貸需要が安定したエリアか／築浅・管理状態が良いか／再建築可・権利関係が単純か
+
+【役割分担】
+- Andy＝民泊物件の現場運営、Sora＝購入判断と資産全体の管理
+
+【報告スタイル】
+- パイプライン物件の契約時期が近いものから優先して報告
+- 詳細不明な新規物件（住所・条件など）は「まだ情報が無いので教えてください」と聞く。想像で埋めない"""
+
+
 def get_db():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
@@ -798,6 +870,97 @@ def dinner_suggestion():
     return f'done: dinner suggestion sent to {len(user_ids)} users'
 
 
+def send_mia_briefing():
+    user_ids = get_all_user_ids('emi')
+    pipeline_text = format_pipeline_text()
+    for user_id in user_ids:
+        chat = groq_client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=[
+                {'role': 'system', 'content': MIA_PROMPT},
+                {'role': 'user', 'content': f'今週のマーケティング視点での気づきをSkylerに報告してください。\n\n【参考：現在の民泊パイプライン】\n{pipeline_text}'}
+            ]
+        )
+        message = '[Mia]\n' + chat.choices[0].message.content
+        push_line(user_id, message, EMI_ACCESS_TOKEN)
+
+
+@app.route('/mia-briefing', methods=['GET'])
+def mia_briefing():
+    send_mia_briefing()
+    user_ids = get_all_user_ids('emi')
+    return f'done: Mia briefing sent to {len(user_ids)} users'
+
+
+def send_kai_checkin():
+    user_ids = get_all_user_ids('emi')
+    for user_id in user_ids:
+        chat = groq_client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=[
+                {'role': 'system', 'content': KAI_PROMPT},
+                {'role': 'user', 'content': '今週の資金繰り・目標進捗チェックインをSkylerに送ってください。最新の試算表データが無いことを前提に、確認したい数字があれば質問してください。'}
+            ]
+        )
+        message = '[Kai]\n' + chat.choices[0].message.content
+        push_line(user_id, message, EMI_ACCESS_TOKEN)
+
+
+@app.route('/kai-checkin', methods=['GET'])
+def kai_checkin():
+    send_kai_checkin()
+    user_ids = get_all_user_ids('emi')
+    return f'done: Kai check-in sent to {len(user_ids)} users'
+
+
+def send_remi_ota_watch():
+    user_ids = get_all_user_ids('andy')
+    all_otas = ['Airbnb', 'Booking.com', 'じゃらん', '楽天トラベル', 'サイトコントローラー']
+    for user_id in user_ids:
+        ota_tasks = get_tasks(user_id, 'andy', 'ota')
+        completed = [t['content'].replace('OTA登録完了: ', '') for t in ota_tasks]
+        status_lines = [f'{"✅" if any(ota in c for c in completed) else "⬜"} {ota}' for ota in all_otas]
+        status_text = '\n'.join(status_lines)
+        chat = groq_client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=[
+                {'role': 'system', 'content': REMI_PROMPT},
+                {'role': 'user', 'content': f'今日のOTA登録状況を報告し、空室を作らないための提案をしてください。\n\n【OTA登録状況】\n{status_text}'}
+            ]
+        )
+        message = '[Remi]\n' + chat.choices[0].message.content
+        push_line(user_id, message, ANDY_ACCESS_TOKEN)
+
+
+@app.route('/remi-watch', methods=['GET'])
+def remi_watch():
+    send_remi_ota_watch()
+    user_ids = get_all_user_ids('andy')
+    return f'done: Remi OTA watch sent to {len(user_ids)} users'
+
+
+def send_sora_pipeline_watch():
+    user_ids = get_all_user_ids('andy')
+    pipeline_text = format_pipeline_text()
+    for user_id in user_ids:
+        chat = groq_client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=[
+                {'role': 'system', 'content': SORA_PROMPT},
+                {'role': 'user', 'content': f'今週のパイプライン物件・保有不動産の進捗チェックをSkylerに報告してください。契約時期が近いものを優先し、情報が足りない物件があれば質問してください。\n\n【パイプライン・保有物件】\n{pipeline_text}'}
+            ]
+        )
+        message = '[Sora]\n' + chat.choices[0].message.content
+        push_line(user_id, message, ANDY_ACCESS_TOKEN)
+
+
+@app.route('/sora-watch', methods=['GET'])
+def sora_watch():
+    send_sora_pipeline_watch()
+    user_ids = get_all_user_ids('andy')
+    return f'done: Sora pipeline watch sent to {len(user_ids)} users'
+
+
 @app.route('/')
 def health():
     return 'mosaique LINE bot is running!'
@@ -808,6 +971,10 @@ with app.app_context():
 
 scheduler = BackgroundScheduler(timezone='Asia/Tokyo')
 scheduler.add_job(send_evening_brief, 'cron', hour=22, minute=0, timezone='Asia/Tokyo')
+scheduler.add_job(send_mia_briefing, 'cron', day_of_week='mon', hour=9, minute=0, timezone='Asia/Tokyo')
+scheduler.add_job(send_kai_checkin, 'cron', day_of_week='mon', hour=8, minute=30, timezone='Asia/Tokyo')
+scheduler.add_job(send_remi_ota_watch, 'cron', hour=8, minute=0, timezone='Asia/Tokyo')
+scheduler.add_job(send_sora_pipeline_watch, 'cron', day_of_week='wed', hour=9, minute=0, timezone='Asia/Tokyo')
 scheduler.start()
 
 if __name__ == '__main__':
