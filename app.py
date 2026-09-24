@@ -3,6 +3,7 @@ import json
 import hashlib
 import hmac
 import base64
+import html
 from flask import Flask, request, abort
 from groq import Groq
 import requests
@@ -217,6 +218,31 @@ ANDY_PROMPT = """あなたはAndy、株式会社mosaiqueの宿泊業・民泊業
 - 「〇〇登録完了」と報告されたら、進捗を更新して次のアクションを案内する
 - 「OTAの進捗は？」と聞かれたら、登録済み・未登録を整理して報告する
 - Booking.com登録前に必ずサイトコントローラー導入を促すこと
+
+【リスティングチェッカー】
+AirbnbやBooking.comなどの掲載ページ（URL・タイトル・説明文）が送られてきたら、
+【リスティング自動チェック結果】を踏まえて、必ず以下のフォーマットで診断すること：
+
+━━━━━━━━━━━━━━━
+📝【リスティング診断】
+・スコア：〇〇/100点
+・タイトル：（良い点／改善点）
+・説明文：（良い点／改善点）
+・写真：（送られていれば評価、なければ「写真の構成チェックも送ってね」と促す）
+
+🚨【今すぐ直すべきTOP3】
+1. 〇〇
+2. 〇〇
+3. 〇〇
+
+✨【改善案】
+・タイトル案（日本語）：〇〇
+・タイトル案（英語）：〇〇
+━━━━━━━━━━━━━━━
+
+- 自動チェックで❌の項目は必ず改善点に含めること
+- 取得できなかった情報を推測で埋めないこと。足りなければ本文の貼り付けをお願いする
+- 外国人ゲストがメインターゲットなので、英語表記の有無は必ず確認する
 
 【判断基準（絶対に守ること）】
 ■ 対象エリア
@@ -452,6 +478,78 @@ def lookup_yoto_chiki(address):
         return None
 
 
+def fetch_listing_page(url):
+    """リスティングURLからタイトル・説明文を取得する（OGPメタタグ優先、取得できなければNone）"""
+    try:
+        r = requests.get(
+            url,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                              '(KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+                'Accept-Language': 'ja,en;q=0.8',
+            },
+            timeout=8
+        )
+        r.raise_for_status()
+        page = r.text
+
+        def meta(prop):
+            for pattern in (
+                rf'<meta[^>]+(?:property|name)=["\']{prop}["\'][^>]+content=["\']([^"\']*)["\']',
+                rf'<meta[^>]+content=["\']([^"\']*)["\'][^>]+(?:property|name)=["\']{prop}["\']',
+            ):
+                m = re.search(pattern, page, re.IGNORECASE)
+                if m:
+                    return html.unescape(m.group(1)).strip()
+            return ''
+
+        title = meta('og:title')
+        if not title:
+            m = re.search(r'<title[^>]*>(.*?)</title>', page, re.IGNORECASE | re.DOTALL)
+            title = html.unescape(m.group(1)).strip() if m else ''
+        description = meta('og:description') or meta('description')
+        if not title and not description:
+            return None
+        return {'title': title, 'description': description}
+    except Exception as e:
+        print(f'fetch_listing_page error: {e}')
+        return None
+
+
+def check_listing(title, description):
+    """リスティングのタイトル・説明文をルールベースでチェックし、(スコア, 結果行リスト)を返す"""
+    text = f'{title}\n{description}'
+    lower = text.lower()
+
+    def has(*words):
+        return any(w.lower() in lower for w in words)
+
+    checks = [
+        (20 <= len(title) <= 50,
+         f'タイトルの長さ（{len(title)}文字／目安20〜50文字）'),
+        (len(description) >= 300,
+         f'説明文のボリューム（{len(description)}文字／目安300文字以上）'),
+        (has('駅', '徒歩', 'station', 'walk', 'min'),
+         'アクセス（最寄駅・徒歩分数）'),
+        (has('wi-fi', 'wifi', 'ワイファイ'),
+         'Wi-Fiの記載'),
+        (has('名', 'guest', 'ゲスト', 'ベッド', 'bed', '布団', 'futon'),
+         '定員・ベッド構成'),
+        (has('チェックイン', 'check-in', 'check in', 'セルフ', 'self'),
+         'チェックイン方法'),
+        (has('キッチン', 'kitchen', '洗濯', 'washer', 'washing'),
+         'キッチン・洗濯機などの設備'),
+        (has('家族', 'グループ', 'カップル', 'family', 'group', 'couple', 'friends'),
+         'ターゲット層（誰向けか）'),
+        (bool(re.search(r'[A-Za-z]{3,}(?:\s+[A-Za-z]{2,}){3,}', text)),
+         '英語での説明（外国人ゲスト向け）'),
+    ]
+    passed = sum(1 for ok, _ in checks if ok)
+    score = round(passed / len(checks) * 100)
+    lines = [f'{"✅" if ok else "❌"} {label}' for ok, label in checks]
+    return score, lines
+
+
 def parse_remind_at(text):
     now = datetime.now()
     patterns = [
@@ -559,6 +657,7 @@ def handle_webhook(body_bytes, signature, channel_secret, access_token, system_p
 - property_analysis: 物件情報（住所・家賃・広さ・築年数など）が含まれており民泊判断を求めている
 - ota_update: OTAの登録完了報告や進捗更新（「Booking.com登録した」など）
 - ota_status: OTAの登録状況・進捗確認
+- listing_check: Airbnb・Booking.comなどの掲載ページ（リスティング）のURLやタイトル・説明文をチェック・添削してほしい
 
 property_analysisの場合は "address" フィールドも返すこと（住所が不明なら空文字）:
 {"intent": "property_analysis", "address": "東京都〇〇区〇〇（抽出できた住所）"}
@@ -666,6 +765,27 @@ calendar_deleteの場合は "keyword" フィールドも返すこと:
                 done = any(ota in c for c in completed)
                 status_lines.append(f'{"✅" if done else "⬜"} {ota}')
             extra_context = '\n\n【OTA登録状況】\n' + '\n'.join(status_lines)
+
+        elif intent == 'listing_check':
+            url_m = re.search(r'https?://\S+', user_message)
+            listing = fetch_listing_page(url_m.group()) if url_m else None
+            if listing:
+                title, description = listing['title'], listing['description']
+                source = f'URL（{url_m.group()}）から取得'
+            else:
+                pasted = re.sub(r'https?://\S+', '', user_message).strip()
+                first_line, _, rest = pasted.partition('\n')
+                title, description = first_line.strip(), rest.strip()
+                source = 'メッセージ本文から取得' + ('（URLからは取得できませんでした）' if url_m else '')
+            if title or description:
+                score, lines = check_listing(title, description)
+                extra_context = (f'\n\n【リスティング自動チェック結果】{source}\n'
+                                 f'タイトル：{title or "（なし）"}\n'
+                                 f'説明文：{description[:1500] or "（なし）"}\n'
+                                 f'ルールチェック：{score}/100点\n' + '\n'.join(lines))
+            else:
+                extra_context = ('\n\n【リスティング自動チェック結果】URLからページ内容を取得できませんでした。'
+                                 '1行目にタイトル、2行目以降に説明文を貼り付けてもらうようお願いしてください。')
 
         elif intent == 'property_analysis':
             address = intent_data.get('address', '').strip()
