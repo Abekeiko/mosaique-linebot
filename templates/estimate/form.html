@@ -1,0 +1,154 @@
+{% extends 'estimate/base.html' %}
+{% block title %}{{ '見積編集' if estimate.id else '新規見積' }}{% endblock %}
+{% block style %}
+  #lines td { padding:4px; }
+  #lines input { padding:4px 6px; }
+  #lines .c-cat { width:120px; } #lines .c-qty { width:80px; } #lines .c-unit { width:64px; }
+  #lines .c-price { width:110px; } #lines .c-amount { width:110px; } #lines .c-ops { width:96px; }
+  .totals { margin-left:auto; max-width:360px; }
+  .totals td { border:none; padding:3px 8px; }
+  .totals tr.grand td { border-top:2px solid var(--fg); font-weight:700; font-size:16px; }
+  .picker { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+  .picker select { max-width:420px; }
+{% endblock %}
+{% block content %}
+<h1>{{ '見積編集 ' ~ estimate.estimate_no if estimate.id else '新規見積' }}</h1>
+<form method="post" id="estimate-form">
+  <input type="hidden" name="csrf_token" value="{{ estimate_csrf_token() }}">
+  <div class="card grid">
+    <div><label>顧客名（様）</label><input name="customer_name" value="{{ estimate.customer_name }}" required></div>
+    <div><label>件名</label><input name="title" value="{{ estimate.title }}" placeholder="例：〇〇様邸 内装リフォーム工事"></div>
+    <div><label>工事場所</label><input name="site_address" value="{{ estimate.site_address }}"></div>
+    <div><label>発行日</label><input type="date" name="issue_date" value="{{ estimate.issue_date }}"></div>
+    <div><label>有効期限（日）</label><input type="number" name="valid_days" value="{{ estimate.valid_days }}" min="1"></div>
+    <div><label>状態</label>
+      <select name="status">{% for s in statuses %}<option {% if s == estimate.status %}selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="scroll">
+    <table id="lines">
+      <thead><tr><th class="c-cat">工種</th><th>品名</th><th>仕様</th><th class="c-qty num">数量</th><th class="c-unit">単位</th><th class="c-price num">単価</th><th class="c-amount num">金額</th><th class="c-ops"></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+    <div class="picker">
+      <select id="item-picker">
+        <option value="">単価マスタから追加…</option>
+        {% for cat, group in items|groupby('category') %}
+          <optgroup label="{{ cat or '未分類' }}">
+          {% for it in group %}
+            <option value="{{ it.id }}">{{ it.name }}{% if it.spec %}（{{ it.spec }}）{% endif %} ¥{{ it.unit_price|yen }}/{{ it.unit }}</option>
+          {% endfor %}
+          </optgroup>
+        {% endfor %}
+      </select>
+      <button type="button" class="btn" id="add-blank">＋ 空行を追加</button>
+      <span class="muted">同じ工種の行は見積書でまとめて小計表示されます</span>
+    </div>
+  </div>
+
+  <div class="card grid">
+    <div><label>諸経費率（%）</label><input type="number" step="0.1" name="overhead_rate" value="{{ estimate.overhead_rate|qty }}" data-calc></div>
+    <div><label>値引き（円）</label><input type="number" name="discount" value="{{ estimate.discount }}" data-calc></div>
+    <div><label>消費税率（%）</label><input type="number" step="0.1" name="tax_rate" value="{{ estimate.tax_rate|qty }}" data-calc></div>
+    <div style="grid-column:1/-1"><label>備考（見積書に表示）</label><textarea name="notes" placeholder="例：工期 約2週間／現地調査の結果により金額が変動する場合があります">{{ estimate.notes }}</textarea></div>
+    <table class="totals" style="grid-column:1/-1">
+      <tr><td>工事費小計</td><td class="num" id="t-subtotal"></td></tr>
+      <tr><td>諸経費</td><td class="num" id="t-overhead"></td></tr>
+      <tr><td>値引き</td><td class="num" id="t-discount"></td></tr>
+      <tr><td>消費税</td><td class="num" id="t-tax"></td></tr>
+      <tr class="grand"><td>税込合計</td><td class="num" id="t-total"></td></tr>
+    </table>
+  </div>
+
+  <div class="actions">
+    <button class="btn primary">保存</button>
+    <a class="btn" href="{{ url_for('estimate.show', estimate_id=estimate.id) if estimate.id else url_for('estimate.index') }}">キャンセル</a>
+  </div>
+</form>
+
+<script>
+const ITEMS = {{ items_json|tojson }};
+const INITIAL_LINES = {{ lines_json|tojson }};
+const tbody = document.querySelector('#lines tbody');
+const fmt = n => '¥' + Math.round(n).toLocaleString('ja-JP');
+const num = v => { const n = parseFloat(String(v).replace(/,/g, '')); return isNaN(n) ? 0 : n; };
+
+function cell(name, value, attrs = '') {
+  const td = document.createElement('td');
+  td.innerHTML = `<input name="line_${name}" ${attrs}>`;
+  td.firstChild.value = value ?? '';
+  return td;
+}
+
+function addRow(l = {}) {
+  const tr = document.createElement('tr');
+  tr.append(
+    cell('category', l.category, 'list="cat-list"'),
+    cell('name', l.name),
+    cell('spec', l.spec),
+    cell('quantity', l.quantity ?? 1, 'type="number" step="0.01" class="num" data-calc'),
+    cell('unit', l.unit),
+    cell('unit_price', l.unit_price ?? 0, 'type="number" class="num" data-calc'),
+  );
+  const amount = document.createElement('td');
+  amount.className = 'num amount';
+  const ops = document.createElement('td');
+  ops.innerHTML = '<button type="button" class="btn sm" data-op="up">↑</button> <button type="button" class="btn sm" data-op="down">↓</button> <button type="button" class="btn sm danger" data-op="del">×</button>';
+  tr.append(amount, ops);
+  tbody.append(tr);
+  recalc();
+  return tr;
+}
+
+function recalc() {
+  let subtotal = 0;
+  for (const tr of tbody.rows) {
+    const q = num(tr.querySelector('[name=line_quantity]').value);
+    const p = num(tr.querySelector('[name=line_unit_price]').value);
+    const a = Math.round(q * p);
+    tr.querySelector('.amount').textContent = fmt(a);
+    subtotal += a;
+  }
+  const f = document.getElementById('estimate-form');
+  const overhead = Math.floor(subtotal * num(f.overhead_rate.value) / 100);
+  const discount = num(f.discount.value);
+  const taxable = subtotal + overhead - discount;
+  const tax = Math.floor(taxable * num(f.tax_rate.value) / 100);
+  document.getElementById('t-subtotal').textContent = fmt(subtotal);
+  document.getElementById('t-overhead').textContent = fmt(overhead);
+  document.getElementById('t-discount').textContent = discount ? '-' + fmt(discount) : fmt(0);
+  document.getElementById('t-tax').textContent = fmt(tax);
+  document.getElementById('t-total').textContent = fmt(taxable + tax);
+}
+
+document.addEventListener('input', e => { if (e.target.matches('[data-calc]')) recalc(); });
+tbody.addEventListener('click', e => {
+  const op = e.target.dataset.op; if (!op) return;
+  const tr = e.target.closest('tr');
+  if (op === 'del') tr.remove();
+  if (op === 'up' && tr.previousElementSibling) tr.after(tr.previousElementSibling);
+  if (op === 'down' && tr.nextElementSibling) tr.before(tr.nextElementSibling);
+  recalc();
+});
+document.getElementById('item-picker').addEventListener('change', e => {
+  const it = ITEMS.find(i => String(i.id) === e.target.value);
+  if (it) {
+    const tr = addRow({category: it.category, name: it.name, spec: it.spec, unit: it.unit, unit_price: it.unit_price, quantity: 1});
+    tr.querySelector('[name=line_quantity]').select();
+  }
+  e.target.value = '';
+});
+document.getElementById('add-blank').addEventListener('click', () => addRow().querySelector('input').focus());
+
+const catList = document.createElement('datalist');
+catList.id = 'cat-list';
+[...new Set(ITEMS.map(i => i.category).filter(Boolean))].forEach(c => catList.append(new Option(c)));
+document.body.append(catList);
+
+INITIAL_LINES.forEach(addRow);
+recalc();
+</script>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends 'estimate/base.html' %}
+{% block title %}見積一覧{% endblock %}
+{% block content %}
+<div class="actions" style="justify-content:space-between">
+  <h1>見積一覧</h1>
+  <a class="btn primary" href="{{ url_for('estimate.new') }}">＋ 新規見積</a>
+</div>
+<form class="card actions" method="get">
+  <input name="q" value="{{ q }}" placeholder="顧客名・件名・見積番号で検索" style="max-width:320px">
+  <select name="status" style="max-width:140px">
+    <option value="">すべての状態</option>
+    {% for s in statuses %}<option {% if s == status %}selected{% endif %}>{{ s }}</option>{% endfor %}
+  </select>
+  <button class="btn">絞り込み</button>
+</form>
+<div class="card scroll">
+  <table>
+    <thead><tr><th>見積番号</th><th>発行日</th><th>顧客名</th><th>件名</th><th>状態</th><th class="num">税込合計</th><th></th></tr></thead>
+    <tbody>
+    {% for e in estimates %}
+      <tr>
+        <td><a href="{{ url_for('estimate.show', estimate_id=e.id) }}">{{ e.estimate_no }}</a></td>
+        <td>{{ e.issue_date }}</td>
+        <td>{{ e.customer_name }}</td>
+        <td>{{ e.title }}</td>
+        <td><span class="badge {{ e.status }}">{{ e.status }}</span></td>
+        <td class="num">¥{{ e.total|yen }}</td>
+        <td class="actions">
+          <a class="btn sm" href="{{ url_for('estimate.edit', estimate_id=e.id) }}">編集</a>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">見積がまだありません。「新規見積」から作成してください。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
