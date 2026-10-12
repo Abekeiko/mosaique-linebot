@@ -13,8 +13,10 @@ import re
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from apscheduler.schedulers.background import BackgroundScheduler
+from estimate import estimate_bp, init_estimate_db
 
 app = Flask(__name__)
+app.register_blueprint(estimate_bp)
 
 groq_client = Groq(api_key=os.environ.get('GROQ_API_KEY'))
 
@@ -805,6 +807,7 @@ def health():
 
 with app.app_context():
     init_db()
+    init_estimate_db()
 
 scheduler = BackgroundScheduler(timezone='Asia/Tokyo')
 scheduler.add_job(send_evening_brief, 'cron', hour=22, minute=0, timezone='Asia/Tokyo')

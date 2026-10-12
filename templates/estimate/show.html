@@ -1,0 +1,103 @@
+{% extends 'estimate/base.html' %}
+{% block title %}見積書 {{ estimate.estimate_no }}{% endblock %}
+{% block style %}
+  .sheet { background:#fff; width:210mm; min-height:297mm; margin:0 auto; padding:16mm 14mm; box-shadow:0 1px 4px rgba(0,0,0,.15); color:#000; font-size:12px; }
+  .sheet h2 { text-align:center; font-size:26px; letter-spacing:.6em; margin:0 0 18px; padding-bottom:6px; border-bottom:3px double #000; }
+  .head { display:flex; justify-content:space-between; gap:24px; }
+  .customer { font-size:18px; border-bottom:1px solid #000; padding-bottom:2px; min-width:85mm; margin-bottom:10px; }
+  .meta td { border:none; padding:1px 6px 1px 0; }
+  .company { text-align:right; line-height:1.6; }
+  .company .name { font-size:15px; font-weight:700; }
+  .amount-box { display:flex; align-items:baseline; gap:16px; border:2px solid #000; padding:8px 14px; margin:16px 0; width:120mm; }
+  .amount-box .v { font-size:24px; font-weight:700; }
+  .sheet table.detail th, .sheet table.detail td { border:1px solid #000; padding:3px 5px; }
+  .sheet table.detail th { background:#eee; text-align:center; }
+  .sheet tr.cat td { background:#f5f5f5; font-weight:700; }
+  .sheet tr.sub td { font-weight:600; }
+  .sum { margin:10px 0 0 auto; width:80mm; }
+  .sum td { border:1px solid #000; padding:3px 6px; }
+  .sum tr.grand td { font-weight:700; font-size:14px; }
+  .notes { margin-top:14px; border:1px solid #000; padding:6px 8px; white-space:pre-wrap; min-height:20mm; }
+  @media print {
+    @page { size:A4; margin:0; }
+    body { background:#fff; }
+    main { padding:0; max-width:none; }
+    .no-print { display:none !important; }
+    .sheet { box-shadow:none; margin:0; }
+    tr { page-break-inside:avoid; }
+  }
+{% endblock %}
+{% block content %}
+<div class="actions no-print" style="margin-bottom:12px">
+  <button class="btn primary" onclick="window.print()">印刷 / PDF保存</button>
+  <a class="btn" href="{{ url_for('estimate.edit', estimate_id=estimate.id) }}">編集</a>
+  <form class="inline" method="post" action="{{ url_for('estimate.copy', estimate_id=estimate.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ estimate_csrf_token() }}">
+    <button class="btn">複製</button>
+  </form>
+  <form class="inline" method="post" action="{{ url_for('estimate.delete', estimate_id=estimate.id) }}" onsubmit="return confirm('この見積を削除しますか？')">
+    <input type="hidden" name="csrf_token" value="{{ estimate_csrf_token() }}">
+    <button class="btn danger">削除</button>
+  </form>
+  <span class="badge {{ estimate.status }}">{{ estimate.status }}</span>
+  <span class="muted">印刷ダイアログで「PDFに保存」を選ぶとPDFになります</span>
+</div>
+
+<div class="sheet">
+  <h2>御見積書</h2>
+  <div class="head">
+    <div>
+      <div class="customer">{{ estimate.customer_name }} 様</div>
+      <table class="meta">
+        <tr><td>件名</td><td>{{ estimate.title }}</td></tr>
+        {% if estimate.site_address %}<tr><td>工事場所</td><td>{{ estimate.site_address }}</td></tr>{% endif %}
+        <tr><td>有効期限</td><td>{{ valid_until.strftime('%Y年%m月%d日') }}</td></tr>
+      </table>
+      <p style="margin:10px 0 0">下記の通り御見積申し上げます。</p>
+    </div>
+    <div class="company">
+      <div>見積番号：{{ estimate.estimate_no }}</div>
+      <div>発行日：{{ estimate.issue_date.strftime('%Y年%m月%d日') }}</div>
+      <div style="margin-top:10px" class="name">{{ company.name }}</div>
+      {% if company.postal %}<div>〒{{ company.postal }}</div>{% endif %}
+      {% if company.address %}<div>{{ company.address }}</div>{% endif %}
+      {% if company.tel %}<div>TEL：{{ company.tel }}</div>{% endif %}
+      {% if company.email %}<div>{{ company.email }}</div>{% endif %}
+      {% if company.reg_no %}<div>登録番号：{{ company.reg_no }}</div>{% endif %}
+    </div>
+  </div>
+
+  <div class="amount-box"><span>御見積金額（税込）</span><span class="v">¥{{ totals.total|yen }}-</span></div>
+
+  <table class="detail">
+    <thead><tr><th>品名</th><th>仕様</th><th style="width:16mm">数量</th><th style="width:12mm">単位</th><th style="width:22mm">単価</th><th style="width:26mm">金額</th></tr></thead>
+    <tbody>
+    {% for g in groups %}
+      {% if g.category %}<tr class="cat"><td colspan="6">{{ g.category }}</td></tr>{% endif %}
+      {% for l in g.lines %}
+        <tr>
+          <td>{{ l.name }}</td><td>{{ l.spec }}</td>
+          <td class="num">{{ l.quantity|qty }}</td><td style="text-align:center">{{ l.unit }}</td>
+          <td class="num">{{ l.unit_price|yen }}</td><td class="num">{{ l.amount|yen }}</td>
+        </tr>
+      {% endfor %}
+      {% if groups|length > 1 %}<tr class="sub"><td colspan="5" style="text-align:right">{{ g.category or '' }} 小計</td><td class="num">{{ g.subtotal|yen }}</td></tr>{% endif %}
+    {% else %}
+      <tr><td colspan="6" class="muted">明細がありません</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <table class="sum">
+    <tr><td>工事費小計</td><td class="num">{{ totals.subtotal|yen }}</td></tr>
+    {% if totals.overhead %}<tr><td>諸経費（{{ estimate.overhead_rate|qty }}%）</td><td class="num">{{ totals.overhead|yen }}</td></tr>{% endif %}
+    {% if totals.discount %}<tr><td>値引き</td><td class="num">-{{ totals.discount|yen }}</td></tr>{% endif %}
+    <tr><td>税抜合計</td><td class="num">{{ totals.taxable|yen }}</td></tr>
+    <tr><td>消費税（{{ estimate.tax_rate|qty }}%）</td><td class="num">{{ totals.tax|yen }}</td></tr>
+    <tr class="grand"><td>税込合計</td><td class="num">¥{{ totals.total|yen }}</td></tr>
+  </table>
+
+  {% if estimate.notes %}<div class="notes"><strong>備考</strong>
+{{ estimate.notes }}</div>{% endif %}
+</div>
+{% endblock %}
