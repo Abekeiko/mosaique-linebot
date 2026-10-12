@@ -22,7 +22,7 @@ ESTIMATE_USER = os.environ.get('ESTIMATE_USER', 'admin')
 ESTIMATE_PASSWORD = os.environ.get('ESTIMATE_PASSWORD', '')
 
 COMPANY = {
-    'name': os.environ.get('COMPANY_NAME', '株式会社mosaique'),
+    'name': os.environ.get('COMPANY_NAME', '株式会社Kaleido'),
     'postal': os.environ.get('COMPANY_POSTAL', ''),
     'address': os.environ.get('COMPANY_ADDRESS', ''),
     'tel': os.environ.get('COMPANY_TEL', ''),
@@ -156,7 +156,7 @@ def require_auth(f):
         if not (auth and hmac.compare_digest(auth.username or '', ESTIMATE_USER)
                 and hmac.compare_digest(auth.password or '', ESTIMATE_PASSWORD)):
             return Response('認証が必要です', 401,
-                            {'WWW-Authenticate': 'Basic realm="mosaique estimate"',
+                            {'WWW-Authenticate': 'Basic realm="Kaleido estimate"',
                              'Content-Type': 'text/plain; charset=utf-8'})
         if request.method == 'POST':
             if not hmac.compare_digest(request.form.get('csrf_token', ''), csrf_token()):
